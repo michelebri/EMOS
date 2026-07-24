@@ -149,13 +149,15 @@ habitat:
       agent_2:
         joint_start_noise: 0.0
       
-    w2j: True
+    # Evaluation replays the stored per-episode starts. Never rewrite the
+    # shared robot configuration while comparing systems.
+    w2j: False
     json_path: "data/robots/robot_configs/mp3d/mp3d_episodes_1.json"
     scene_type: mp3d
   dataset:
     data_path: data/datasets/mp3d/mp3d_episodes_1.json.gz
     # new
-    randomize_agent_start: 1
+    randomize_agent_start: 0
     robot_config: data/robots/robot_configs/mp3d/mp3d_episodes_1.json
     mode: mobility
     should_group_discussion: True

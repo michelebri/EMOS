@@ -178,15 +178,22 @@ def get_full_capabilities(robot: dict):
 
 def parse_leader_response(text):
     # Define the regular expression pattern
-    text = text.replace("\n", "")
+    text = (text or "").replace("\n", "")
     pattern = r"\{(.*?)\|\|(.*?)\}"
 
     # Find all matches in the text
     matches = re.findall(pattern, text)
 
+    # Some OpenAI-compatible backends preserve the requested pair format but
+    # omit the surrounding braces. Accept only that narrow format variation.
+    if not matches:
+        loose_pattern = r"(agent_\d+)\s*\|\|\s*(.*?)(?=agent_\d+\s*\|\||$)"
+        matches = re.findall(loose_pattern, text)
+
     # Create a dictionary from the matches
     robot_tasks = {
-        robot_id: subtask_description for robot_id, subtask_description in matches
+        robot_id.strip(): subtask_description.strip()
+        for robot_id, subtask_description in matches
     }
 
     return robot_tasks
@@ -236,6 +243,7 @@ def group_discussion(
     should_robot_resume: bool = True, 
     should_numerical: bool = True,
     max_discussion_rounds = 3,
+    token_usage_callback: Optional[Callable[[int], None]] = None,
 ) -> dict[str, AgentArguments]:
 
     ### 0. whether save chat history or not
@@ -294,6 +302,7 @@ def group_discussion(
         enable_logging=save_chat_history,
         logging_file = os.path.join(episode_save_dir, "leader_group_chat_history.json"),
         agent_name="leader",
+        token_usage_callback=token_usage_callback,
     )
 
     ### 4. create robot agents, no chat yet
@@ -316,6 +325,7 @@ def group_discussion(
             enable_logging=save_chat_history,
             logging_file = os.path.join(episode_save_dir, f"{robot_key}_group_chat_history.json"),
             agent_name=robot_resume[robot_key]["robot_type"],
+            token_usage_callback=token_usage_callback,
         )
 
     ### 5. leader get task and scene, assign initial subtask to robots
@@ -325,6 +335,7 @@ def group_discussion(
     )
     response = leader.chat(leader_start_message)
     robot_tasks = parse_leader_response(response)
+    robot_tasks = {key: value for key, value in robot_tasks.items() if key in agents}
     print("===============Scene Description==============")
     print(scene_description)
     print("===============Task Description==============")
@@ -341,7 +352,7 @@ def group_discussion(
                 robot_id=agent,
                 robot_type=robot_resume[agent]["robot_type"],
                 task_description=task_description,
-                subtask_description=robot_tasks[agent],
+                subtask_description=robot_tasks.get(agent, ""),
                 chat_history=agents[agent].chat_history,
             )
         return results
@@ -380,6 +391,9 @@ def group_discussion(
 
         response = leader.chat(prompt)
         robot_tasks = parse_leader_response(response)
+        robot_tasks = {
+            key: value for key, value in robot_tasks.items() if key in agents
+        }
 
         print("===============Leader Response==============")
         print(response)
@@ -403,7 +417,7 @@ def group_discussion(
             robot_id=agent,
             robot_type=robot_resume[agent]["robot_type"],
             task_description=task_description,
-            subtask_description=robot_tasks[agent],
+            subtask_description=robot_tasks.get(agent, ""),
             chat_history=agents[agent].chat_history,
         )
     leader_tokens = leader.token_usage
@@ -454,6 +468,8 @@ class MultiLLMPolicy(MultiPolicy):
                 self.should_numerical
             )
         ]
+        self._episode_id: Optional[str] = None
+        self._episode_group_tokens = 0
 
     def set_active(self, active_policies):
         self._active_policies = active_policies
@@ -461,6 +477,35 @@ class MultiLLMPolicy(MultiPolicy):
     def on_envs_pause(self, envs_to_pause):
         for policy in self._active_policies:
             policy.on_envs_pause(envs_to_pause)
+
+    def start_episode_accounting(self, episode_id: Any) -> None:
+        self._episode_id = str(episode_id)
+        self._episode_group_tokens = 0
+        # Clear the preceding episode's execution model before planning can
+        # fail, otherwise its token count would leak into the new record.
+        for policy in self._active_policies:
+            llm_agent = policy._high_level_policy.llm_agent
+            llm_agent.initialized = False
+            llm_agent.start_act = False
+            llm_agent.llm_model = None
+
+    def _record_group_tokens(self, token_count: int) -> None:
+        self._episode_group_tokens += int(token_count)
+
+    def get_episode_token_usage(self) -> Dict[str, Any]:
+        execution_by_agent = {}
+        for agent_i, policy in enumerate(self._active_policies):
+            llm_agent = policy._high_level_policy.llm_agent
+            execution_by_agent[f"agent_{agent_i}"] = int(
+                llm_agent.get_token_usage()
+            )
+        execution_total = sum(execution_by_agent.values())
+        return {
+            "group_discussion": int(self._episode_group_tokens),
+            "execution": int(execution_total),
+            "execution_by_agent": execution_by_agent,
+            "total": int(self._episode_group_tokens + execution_total),
+        }
 
     def act(
         self,
@@ -520,6 +565,8 @@ class MultiLLMPolicy(MultiPolicy):
                     scene_description = env_text_context["scene_description"]
                 if "episode_id" in env_text_context:
                     episode_id = env_text_context["episode_id"]
+                if self._episode_id != str(episode_id):
+                    self.start_episode_accounting(episode_id)
                 # print("===============Group Discussion===============")
                 # print(robot_resume)
                 # print("=============================================")
@@ -539,6 +586,7 @@ class MultiLLMPolicy(MultiPolicy):
                     save_chat_history=save_chat_history,
                     save_chat_history_dir=save_chat_history_dir,
                     episode_id=episode_id,
+                    token_usage_callback=self._record_group_tokens,
                 )
                 envs_agent_arguments.append(agent_arguments)
                 

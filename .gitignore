@@ -105,3 +105,6 @@ data
 video_dir/**
 *.ply
 debug/
+paper_results/*
+navmeshes/*
+episode_log/*

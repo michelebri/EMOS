@@ -25,6 +25,10 @@ from habitat_sim.physics import MotionType
 from habitat.articulated_agents.robots import (
     StretchRobot,
 )
+from habitat.tasks.utils import get_angle
+
+
+_ARM_ALIGN_THRESH_RAD = 0.05
 
 
 
@@ -156,6 +160,25 @@ class OraclePickAction(ArmEEAction, ArticulatedAgentAction):
             self.cur_articulated_agent.fix_joint_values = des_joint_pos
         self._sim.step_physics(1.0 / 60)
 
+    def _snap_base_to_face(self, target_coord: np.ndarray) -> None:
+        """Align the kinematic oracle base before solving arm IK."""
+        agent = self.cur_articulated_agent
+        base_pos = np.asarray(agent.base_pos)
+        relative = np.asarray(target_coord) - base_pos
+        relative_2d = np.array([relative[0], relative[2]])
+        if np.linalg.norm(relative_2d) < 1e-6:
+            return
+
+        forward = np.asarray(
+            agent.base_transformation.transform_vector(
+                mn.Vector3(1.0, 0.0, 0.0)
+            )
+        )
+        forward_2d = np.array([forward[0], forward[2]])
+        if get_angle(forward_2d, relative_2d) < _ARM_ALIGN_THRESH_RAD:
+            return
+        agent.base_rot = float(np.arctan2(-relative_2d[1], relative_2d[0]))
+
     def step(self, pick_action, **kwargs):
         object_pick_pddl_idx = pick_action[0]
         should_pick = pick_action[1]
@@ -166,13 +189,19 @@ class OraclePickAction(ArmEEAction, ArticulatedAgentAction):
         if should_pick == 1:
             # or self.cur_grasp_mgr.snap_idx is None
             object_coord = self._get_coord_for_pddl_idx(object_pick_pddl_idx)
+            self._snap_base_to_face(object_coord)
             cur_ee_pos = self.cur_articulated_agent.ee_transform().translation
-            if not self.is_reset:
-                self.ee_target = self._ik_helper.calc_fk(self.cur_articulated_agent.arm_joint_pos)
-                # Note: ee_target is under transformation of ik_help,
-                # it should be transformed to the world base to be equal to cur_ee_pos
-                # cur_ee_pos = self.cur_articulated_agent.base_transformation.transform_point(self.ee_target)
+            current_fk = np.asarray(
+                self._ik_helper.calc_fk(
+                    np.asarray(self.cur_articulated_agent.arm_joint_pos)
+                )
+            )
+            if not self.is_reset or self.ee_target is None:
+                self.ee_target = current_fk
                 self.is_reset = True
+            self.ee_target = current_fk + np.clip(
+                np.asarray(self.ee_target) - current_fk, -0.15, 0.15
+            )
             translation = object_coord - cur_ee_pos
 
             # translation from object to end effector in base frame
@@ -238,10 +267,19 @@ class OraclePlaceAction(OraclePickAction):
         if should_place == 2:
             # get recep coordinates
             recep_coord = self._get_coord_for_pddl_idx(recep_place_pddl_idx)
+            self._snap_base_to_face(recep_coord)
             cur_ee_pos = self.cur_articulated_agent.ee_transform().translation
-            if not self.is_reset:
-                self.ee_target = self._ik_helper.calc_fk(self.cur_articulated_agent.arm_joint_pos)
+            current_fk = np.asarray(
+                self._ik_helper.calc_fk(
+                    np.asarray(self.cur_articulated_agent.arm_joint_pos)
+                )
+            )
+            if not self.is_reset or self.ee_target is None:
+                self.ee_target = current_fk
                 self.is_reset = True
+            self.ee_target = current_fk + np.clip(
+                np.asarray(self.ee_target) - current_fk, -0.15, 0.15
+            )
             translation = recep_coord - cur_ee_pos
 
             # translation from object to end effector in base frame

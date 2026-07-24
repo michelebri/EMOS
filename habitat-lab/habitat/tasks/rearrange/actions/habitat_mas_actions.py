@@ -260,13 +260,15 @@ class OracleNavDiffBaseAction(OracleNavAction):
         super().reset(*args, **kwargs)
         self.prev_nav_done = False
         self.skill_done = False
-        if self._task._episode_id != self._prev_ep_id:
-            self._targets = {}
-            self._prev_ep_id = self._task._episode_id
+        self._targets = {}
+        self._prev_ep_id = self._task._episode_id
 
 
     def _get_target_for_idx(self, nav_to_target_idx: int):
         if nav_to_target_idx not in self._targets:
+            self._poss_entities = (
+                self._task.pddl_problem.get_ordered_entities_list()
+            )
             nav_to_obj = self._poss_entities[nav_to_target_idx]
             obj_pos = self._task.pddl_problem.sim_info.get_entity_pos(
                 nav_to_obj
@@ -395,8 +397,11 @@ class OracleNavDiffBaseAction(OracleNavAction):
             angle_to_target = get_angle(robot_forward, rel_targ)
             angle_to_obj = get_angle(robot_forward, rel_pos)
 
+            # A planar-only completion check falsely succeeds directly above
+            # or below a target. Steering remains planar, but completion also
+            # requires reaching the target floor.
             dist_to_final_nav_targ = np.linalg.norm(
-                (final_nav_targ - robot_pos)[[0, 2]]
+                final_nav_targ - robot_pos
             )
             at_goal = (
                 dist_to_final_nav_targ < self._config.dist_thresh

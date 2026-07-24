@@ -546,12 +546,14 @@ class PddlDomain:
             key=lambda x: x.name,
         )
 
-    def get_entity(self, k: str) -> PddlEntity:
+    def get_entity(self, k: str) -> Optional[PddlEntity]:
         """
         Gets an entity from the `all_entities` dictionary by key name.
+        Returns ``None`` for unknown LLM-provided entity names so skill
+        parsers can raise a descriptive episode-level error.
         """
 
-        return self.all_entities[k]
+        return self.all_entities.get(k)
 
     def find_entities(self, entity_type: ExprType) -> Iterable[PddlEntity]:
         """

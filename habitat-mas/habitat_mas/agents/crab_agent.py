@@ -42,7 +42,7 @@ class CrabAgent:
         self.action_prompt = _generate_action_prompt(self.actions, include_arguments=True)
 
     def get_token_usage(self):
-        return self.llm_model.token_usage
+        return 0 if self.llm_model is None else self.llm_model.token_usage
 
     def init_agent(
         self,

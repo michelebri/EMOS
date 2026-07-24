@@ -236,7 +236,9 @@ class RearrangeTask(NavigationTask):
                     agent_idx=agent_idx, filter_func=filter_agent_position
                 )
             else:
-                episode_id = self._sim.ep_info.episode_id
+                # JSON object keys are strings even when Habitat exposes an
+                # integer episode_id.
+                episode_id = str(self._sim.ep_info.episode_id)
                 agents = self._robot_config[episode_id]['agents']
                 for agent in agents:
                     if agent['agent_idx'] == agent_idx:
@@ -360,7 +362,9 @@ class RearrangeTask(NavigationTask):
             done = True
 
         action_stop = [v for k, v in action['action_args'].items() if 'rearrange_stop' in k]
-        if all(v == [1] for v in action_stop):
+        # An omitted stop action means "continue", not "all agents stopped":
+        # Python's all([]) is True, so require at least one stop entry.
+        if action_stop and all(v == [1] for v in action_stop):
             done = True
 
         # Check that none of the articulated agents are violating the hold constraint
@@ -428,7 +432,8 @@ class RearrangeTask(NavigationTask):
         return self.n_objs
 
     def get_task_text_context(self) -> dict:
-        current_episode_idx = self._sim.ep_info.episode_id
+        # Match the string keys produced by json.load().
+        current_episode_idx = str(self._sim.ep_info.episode_id)
 
         if not self._robot_config or current_episode_idx not in self._robot_config:
         # load agent with new sampled position

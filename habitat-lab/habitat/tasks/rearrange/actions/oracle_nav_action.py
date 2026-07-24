@@ -132,13 +132,26 @@ class OracleNavAction(BaseVelAction, BaseVelNonCylinderAction, HumanoidJointActi
 
     def reset(self, *args, **kwargs):
         super().reset(*args, **kwargs)
-        if self._task._episode_id != self._prev_ep_id:
-            self._targets = {}
-            self._prev_ep_id = self._task._episode_id
-            self.skill_done = False
+        # Target coordinates depend on the current episode. Habitat can reset
+        # actions before task._episode_id reflects the incoming episode, so a
+        # conditional cache invalidation may reuse a waypoint from another
+        # scene/floor. Rebuild the entity ordering and target cache on every
+        # episode reset.
+        self._poss_entities = (
+            self._task.pddl_problem.get_ordered_entities_list()
+        )
+        self._targets = {}
+        self._prev_ep_id = self._task._episode_id
+        self.skill_done = False
 
     def _get_target_for_idx(self, nav_to_target_idx: int):
         if nav_to_target_idx not in self._targets:
+            # The PDDL problem is rebound during episode reset after actions
+            # may already have received reset(). Resolve the index against the
+            # live problem here rather than an entity list captured earlier.
+            self._poss_entities = (
+                self._task.pddl_problem.get_ordered_entities_list()
+            )
             nav_to_obj = self._poss_entities[nav_to_target_idx]
             obj_pos = self._task.pddl_problem.sim_info.get_entity_pos(
                 nav_to_obj
@@ -216,8 +229,11 @@ class OracleNavAction(BaseVelAction, BaseVelNonCylinderAction, HumanoidJointActi
             angle_to_target = get_angle(robot_forward, rel_targ)
             angle_to_obj = get_angle(robot_forward, rel_pos)
 
+            # Navigation steering is planar, but completion must not be.
+            # Using only X/Z lets a robot directly above or below the target
+            # report skill_done without ever changing floor.
             dist_to_final_nav_targ = np.linalg.norm(
-                (final_nav_targ - robot_pos)[[0, 2]]
+                final_nav_targ - robot_pos
             )
             at_goal = (
                 dist_to_final_nav_targ < self._config.dist_thresh

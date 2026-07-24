@@ -1,12 +1,24 @@
 import json
 import os
 from ..agents.crab_core import Action
-from typing import List
+from typing import Callable, List, Optional
 import openai
 from .python_interpreter import SubprocessInterpreter
 # from openai.types.chat.chat_completion import ChatCompletionMessage
 # from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall
 from pydantic import BaseModel
+
+
+class ToolCallCrashError(RuntimeError):
+    """The LLM violated the required tool-call response contract."""
+
+    def __init__(self, content: str = ""):
+        self.content = content or ""
+        super().__init__(
+            "LLM returned no tool calls under tool_choice='required' "
+            f"(content={self.content[:200]!r})"
+        )
+
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -20,7 +32,7 @@ class OpenAIModel:
         self,
         system_prompt: str,
         action_space: List[Action],
-        model="gpt-4o",
+        model=os.environ.get("HABITAT_LLM_MODEL", "gpt-4o"),
         window_size=None,
         discussion_stage=False,
         code_execution=False,
@@ -28,6 +40,7 @@ class OpenAIModel:
         logging_file="",
         save_on_each_chat=True,
         agent_name="unknown",
+        token_usage_callback: Optional[Callable[[int], None]] = None,
     ) -> None:
         self.system_message = {
             "role": "system",
@@ -39,6 +52,19 @@ class OpenAIModel:
         self.window_size = window_size
         self.model = model
         self.client = openai.OpenAI()
+        if os.environ.get("DISABLE_THINKING") == "1":
+            original_create = self.client.chat.completions.create
+
+            def create_without_thinking(*args, **kwargs):
+                extra_body = dict(kwargs.pop("extra_body", {}) or {})
+                chat_template_kwargs = dict(
+                    extra_body.get("chat_template_kwargs", {}) or {}
+                )
+                chat_template_kwargs["enable_thinking"] = False
+                extra_body["chat_template_kwargs"] = chat_template_kwargs
+                return original_create(*args, extra_body=extra_body, **kwargs)
+
+            self.client.chat.completions.create = create_without_thinking
         self.planning_stage = discussion_stage
         self.code_execution = code_execution
         if self.code_execution:
@@ -50,12 +76,20 @@ class OpenAIModel:
         )
         self.tool_calls_enable = True if action_space else False
         self.token_usage = 0
+        self.token_usage_callback = token_usage_callback
         
         # Debug logging
         self.enable_logging = enable_logging
         self.logging_file = logging_file
         self.save_on_each_chat = save_on_each_chat
         self.agent_name = agent_name
+
+    def _record_response_tokens(self, response) -> None:
+        usage = getattr(response, "usage", None)
+        response_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+        self.token_usage += response_tokens
+        if self.token_usage_callback is not None and response_tokens:
+            self.token_usage_callback(response_tokens)
 
     
     def __del__(self):
@@ -117,14 +151,14 @@ class OpenAIModel:
                         messages=request,  # type: ignore
                         model=self.model,
                     )
-                self.token_usage += response.usage.total_tokens
+                self._record_response_tokens(response)
 
                 response_message = response.choices[0].message
                 self.chat_history[-1].append(response_message)
                 request.append(response_message)
 
                 tool_calls = response_message.tool_calls
-                codes = _extract_code(response_message.content)
+                codes = _extract_code(response_message.content or "")
                 if self.tool_calls_enable and tool_calls is not None:
                     for tool_call in tool_calls:
                         tool_call_result = {
@@ -172,7 +206,7 @@ class OpenAIModel:
                     messages=request,  # type: ignore
                     model=self.model,
                 )
-                self.token_usage += response.usage.total_tokens
+                self._record_response_tokens(response)
 
                 response_message = response.choices[0].message
                 self.chat_history[-1].append(response_message)
@@ -190,11 +224,13 @@ class OpenAIModel:
                 ],
                 tool_choice="required",
             )
-            self.token_usage += response.usage.total_tokens
+            self._record_response_tokens(response)
 
             response_message = response.choices[0].message
             self.chat_history[-1].append(response_message)
             tool_calls = response_message.tool_calls
+            if not tool_calls:
+                raise ToolCallCrashError(response_message.content or "")
             for idx, tool_call in enumerate(tool_calls):
                 self.chat_history[-1].append(
                     {
@@ -235,7 +271,7 @@ class OpenAIModel:
             self.actions.append(new_action)
 
 
-def _extract_code(content) -> list[tuple[str, str]]:
+def _extract_code(content: str) -> list[tuple[str, str]]:
     codes = []
     texts = []
 
@@ -254,7 +290,7 @@ def _extract_code(content) -> list[tuple[str, str]]:
         code_type = lines[idx].strip()[3:].strip()
         idx += 1
         start_idx = idx
-        while not lines[idx].lstrip().startswith("```"):
+        while idx < len(lines) and not lines[idx].lstrip().startswith("```"):
             idx += 1
         code = "\n".join(lines[start_idx:idx]).strip()
         codes.append((code, code_type))

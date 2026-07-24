@@ -188,7 +188,7 @@ def generate_objects_description(sim, object_layer):
             obj_name = sim._handle_to_goal_name[obj.full_name]
         elif obj.label:
             obj_name = obj.label
-        if obj.full_name is None:
+        elif obj.full_name is None:
             obj_name = "any_targets|" + str(obj_id)
         else:
             obj_name = obj.full_name
