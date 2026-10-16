@@ -20,6 +20,17 @@ class ToolCallCrashError(RuntimeError):
         )
 
 
+class PlanningLoopCrashError(RuntimeError):
+    """The opt-in small-LLM guard stopped a non-terminating plan loop."""
+
+    def __init__(self, reason: str, rounds: int):
+        self.reason = reason
+        self.rounds = rounds
+        super().__init__(
+            f"Small-LLM planning guard stopped after {rounds} rounds: {reason}"
+        )
+
+
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, BaseModel):
@@ -139,7 +150,21 @@ class OpenAIModel:
         self.chat_history.append([new_message])
 
         if self.planning_stage:
+            # Upstream EMOS has an intentionally unbounded tool/code loop here.
+            # Preserve that behavior unless this explicit experiment flag is
+            # enabled.  Small models can repeat malformed code forever, which
+            # otherwise prevents an episode result from ever being recorded.
+            small_llm_guard = os.environ.get("SMALL_LLM_RUN") == "1"
+            max_planning_rounds = 12
+            repeated_responses = {}
+            planning_round = 0
             while True:
+                planning_round += 1
+                if small_llm_guard and planning_round > max_planning_rounds:
+                    raise PlanningLoopCrashError(
+                        "maximum planning rounds exceeded",
+                        max_planning_rounds,
+                    )
                 if self.tool_calls_enable:
                     response = self.client.chat.completions.create(
                         messages=request,  # type: ignore
@@ -159,6 +184,28 @@ class OpenAIModel:
 
                 tool_calls = response_message.tool_calls
                 codes = _extract_code(response_message.content or "")
+                if small_llm_guard:
+                    response_signature = json.dumps(
+                        {
+                            "content": response_message.content or "",
+                            "tool_calls": [
+                                {
+                                    "name": call.function.name,
+                                    "arguments": call.function.arguments,
+                                }
+                                for call in (tool_calls or [])
+                            ],
+                        },
+                        sort_keys=True,
+                    )
+                    repeated_responses[response_signature] = (
+                        repeated_responses.get(response_signature, 0) + 1
+                    )
+                    if repeated_responses[response_signature] >= 3:
+                        raise PlanningLoopCrashError(
+                            "identical response repeated three times",
+                            planning_round,
+                        )
                 if self.tool_calls_enable and tool_calls is not None:
                     for tool_call in tool_calls:
                         tool_call_result = {

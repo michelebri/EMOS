@@ -64,6 +64,11 @@ defaults:
 habitat:
   # seed: 42
   task:
+    actions:
+      agent_1_arm_pick_action:
+        # Stretch's Habitat EE and PyBullet IK grasp reference differ by
+        # roughly 9-14 cm. Keep Fetch at the upstream 0.10 m threshold.
+        grasp_thresh_dist: 0.18
     lab_sensors:
       agent_0_agents_within_threshold:
         x_len: 2.0

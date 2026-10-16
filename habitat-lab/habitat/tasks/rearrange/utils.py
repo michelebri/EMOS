@@ -387,11 +387,17 @@ class IkHelper:
             joint_vel = np.zeros((len(joint_pos),))
 
         dof = len(joint_pos)
+        if dof > len(self._non_fixed_joints):
+            raise ValueError(
+                f"Received {dof} arm joints, but the PyBullet model only "
+                f"contains {len(self._non_fixed_joints)} non-fixed joints."
+            )
 
         for i in range(dof):
+            joint_idx = self._non_fixed_joints[i]
             p.resetJointState(
                 self.robo_id,
-                i,
+                joint_idx,
                 joint_pos[i],
                 joint_vel[i],
                 physicsClientId=self.pc_id,

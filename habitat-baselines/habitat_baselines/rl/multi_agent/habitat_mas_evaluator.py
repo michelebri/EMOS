@@ -30,7 +30,10 @@ from habitat_baselines.utils.common import (
     is_continuous_action_space,
 )
 from habitat_baselines.utils.info_dict import extract_scalars_from_info
-from habitat_mas.utils.models import ToolCallCrashError
+from habitat_mas.utils.models import (
+    PlanningLoopCrashError,
+    ToolCallCrashError,
+)
 
 
 class _StreamingDiskVideo:
@@ -218,6 +221,12 @@ class HabitatMASEvaluator(Evaluator):
                     "HABITAT_LLM_MODEL", "gpt-4o"
                 ),
             }
+            if os.environ.get("SMALL_LLM_RUN") == "1":
+                record["small_llm_run"] = True
+                record["planning_guard"] = {
+                    "max_rounds": 12,
+                    "max_identical_responses": 3,
+                }
             if crash_message:
                 record["crash_message"] = str(crash_message)
             append_episode_result(episode_results_path, record)
@@ -226,6 +235,8 @@ class HabitatMASEvaluator(Evaluator):
         def _crash_type(error: Exception) -> str:
             if isinstance(error, ToolCallCrashError):
                 return "tool_call_crash"
+            if isinstance(error, PlanningLoopCrashError):
+                return "planning_loop_crash"
             if (
                 isinstance(error, ValueError)
                 and "Cannot find matching entity" in str(error)
